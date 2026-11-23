@@ -126,7 +126,8 @@ body.sender .top-side,body.sender main{display:none}
 .send-pre{background:var(--scan);border-radius:14px;aspect-ratio:3/4;display:grid;place-content:center;overflow:hidden;color:#dfe9f5;font-weight:700;text-align:center;padding:0}
 .send-pre img,.send-pre video{width:100%;height:100%;object-fit:contain;display:block}
 .bigbtn{display:block;width:100%;border:0;cursor:pointer;text-align:center;background:var(--pc);color:var(--on-pc);font-weight:900;font-size:1.15rem;border-radius:14px;padding:.65em 1em}
-.cam-bar{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}
+.cam-bar{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:10px}
+.brush small{flex-basis:100%;color:var(--muted);font-weight:700}
 .cam-bar .cta{width:auto;font-size:1.4rem}
 .send-pre p{margin:0;padding:18px}
 .send .cta{width:100%}
@@ -224,16 +225,16 @@ body.fight .top{margin-bottom:10px;justify-content:flex-end}
       <li>頭から 足の先まで 入るように とってね</li>
       <li>むじの かべや 幕の 前で とると きれいに 切りぬけるよ</li>
     </ul>
-    <button type="button" class="bigbtn" id="camBtn">カメラで とる</button>
-    <input type="file" accept="image/*" capture="environment" id="sendCam" hidden>
-    <label class="file"><input type="file" accept="image/*" id="sendPick"><span>アルバムから えらぶ</span></label>
-    <div class="send-pre" id="sendPre"><p>ここに しゃしんが 出るよ</p></div>
-    <div class="cam-bar" id="camBar" hidden>
-      <button type="button" class="chip" id="camFlip">カメラを 切りかえる</button>
-      <button type="button" class="cta" id="camShot">シャッター</button>
-      <button type="button" class="chip" id="camStop">やめる</button>
+    <div id="camView" hidden>
+      <div class="send-pre" id="sendPre"></div>
+      <div class="cam-bar">
+        <button type="button" class="chip" id="camFlip">カメラを 切りかえる</button>
+        <button type="button" class="cta" id="camShot">シャッター</button>
+        <button type="button" class="chip" id="camStop">やめる</button>
+      </div>
     </div>
-    <input class="p-name" id="sendName" maxlength="8" placeholder="なまえ(8文字まで・なくても OK)" aria-label="なまえ">
+    <input type="file" accept="image/*" capture="environment" id="sendCam" hidden>
+    <div id="senderPanel"></div>
     <button class="cta" id="sendBtn" type="button" disabled>大きな 画面に おくる</button>
     <p class="send-st" id="sendSt" role="status"></p>
   </section>
@@ -242,9 +243,12 @@ body.fight .top{margin-bottom:10px;justify-content:flex-end}
 <script>
 /* ======== せってい(必要なときだけ 書きかえる) ========
    senderUrl : スマホが ひらく アドレス。空なら この ページ自身の アドレスを 使う。
-   peer      : PeerJS の せってい。自前の PeerServer / TURN を 使う ときに 指定する。 */
-window.KOMA_CONFIG = { senderUrl: '', peer: null };
+   peer      : PeerJS の せってい。自前の PeerServer / TURN を 使う ときに 指定する。
+   practice  : れんしゅう用の しゃしん。[{ label: 'なまえ', src: 'practice/a.jpg' }, ...]
+   同じ フォルダに koma-config.js を 置くと、そちらの 内容で 上書きされる。 */
+window.KOMA_CONFIG = { senderUrl: '', peer: null, practice: [] };
 </script>
+<script src="koma-config.js"></script>
 <script>//---------------------------------------------------------------------
 //
 // QR Code Generator for JavaScript
@@ -2892,25 +2896,20 @@ if (typeof module !== 'undefined') module.exports = Core;
   const CFG = window.KOMA_CONFIG || {}, PREFIX = 'ningenkoma-', CHUNK = 12000;
   const newPeer = id => (CFG.peer ? new Peer(id, CFG.peer) : id ? new Peer(id) : new Peer());
   const sendMatch = /^#send=([A-Z0-9]{6})\.([01])$/.exec(location.hash);
-  if (sendMatch) { initSender(sendMatch[1], +sendMatch[2]); return; }
+  const SENDER = sendMatch ? { room: sendMatch[1], side: +sendMatch[2] } : null, ACTIVE = SENDER ? [P[SENDER.side]] : P;
+  const PRACTICE = (Array.isArray(CFG.practice) ? CFG.practice : []).filter(x => x && typeof x.src === 'string').slice(0, 12);
+  // 切りぬき(マスク)を 文字列に して おくる / もどす
+  const packMask = m => { const b = new Uint8Array(Math.ceil(m.length / 8)); for (let i = 0; i < m.length; i++) if (m[i]) b[i >> 3] |= 1 << (i & 7); let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); };
+  const unpackMask = (s, n) => { let bin; try { bin = atob(s); } catch (e) { return null; } if (bin.length !== Math.ceil(n / 8)) return null; const m = new Uint8Array(n); for (let i = 0; i < n; i++) m[i] = (bin.charCodeAt(i >> 3) >> (i & 7)) & 1; return m; };
 
   function initSender(room, side) {
-    document.body.classList.add('sender'); const box = $('#sender'); box.hidden = false; box.style.setProperty('--pc', CSSV[side]);
+    const p = P[side]; document.body.classList.add('sender'); const box = $('#sender'); box.hidden = false; box.style.setProperty('--pc', CSSV[side]);
     $('#sendTitle').textContent = TEAM[side] + 'コマの しゃしんを おくる';
     const st = $('#sendSt'), btn = $('#sendBtn'), say = (t, bad) => { st.textContent = t; st.classList.toggle('bad', !!bad); };
-    let data = null, peer = null, conn = null, busy = false, timer = 0;
-    const pre = $('#sendPre'), bar = $('#camBar');
+    let peer = null, conn = null, busy = false, timer = 0, sent = false;
+    const pre = $('#sendPre'), view = $('#camView');
     let stream = null, facing = 'environment';
-    const stopCam = () => { if (stream) { stream.getTracks().forEach(tr => tr.stop()); stream = null; } bar.hidden = true; };
-    const showData = () => {
-      if (data) { const im = new Image(); im.alt = 'えらんだ しゃしん'; im.src = data; pre.replaceChildren(im); }
-      else { const p = document.createElement('p'); p.textContent = 'ここに しゃしんが 出るよ'; pre.replaceChildren(p); }
-    };
-    const useSource = (src, w, h) => {
-      const k = Math.min(1, 720 / Math.max(w, h)), c = mkCanvas(Math.round(w * k), Math.round(h * k));
-      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height); data = c.toDataURL('image/jpeg', 0.85);
-      showData(); btn.disabled = false; btn.textContent = '大きな 画面に おくる'; say('これで よければ「大きな 画面に おくる」を おしてね。');
-    };
+    const stopCam = () => { if (stream) { stream.getTracks().forEach(tr => tr.stop()); stream = null; } view.hidden = true; pre.replaceChildren(); };
     // ページの中で カメラを 起動する(ブラウザに カメラの 許可を もらう)
     async function startCam() {
       stopCam();
@@ -2918,30 +2917,30 @@ if (typeof module !== 'undefined') module.exports = Core;
       catch (er) {
         say(er && (er.name === 'NotAllowedError' || er.name === 'SecurityError') ? 'カメラの 許可が ひつようだよ。ブラウザの せっていで カメラを 許可するか、「アルバムから えらぶ」を 使ってね。'
           : 'カメラを ひらけなかったよ。「アルバムから えらぶ」を 使ってね。', true);
-        showData(); return;
+        return;
       }
       const v = document.createElement('video'); v.muted = true; v.autoplay = true; v.playsInline = true; v.setAttribute('playsinline', '');
       if (facing === 'user') v.style.transform = 'scaleX(-1)';
-      v.srcObject = stream; pre.replaceChildren(v); try { await v.play(); } catch (er) { }
-      bar.hidden = false; say('ぜんしんが 入ったら シャッターを おしてね。'); pre.scrollIntoView({ block: 'center' });
+      v.srcObject = stream; pre.replaceChildren(v); view.hidden = false; try { await v.play(); } catch (er) { }
+      say('ぜんしんが 入ったら シャッターを おしてね。'); view.scrollIntoView({ block: 'start' });
     }
-    $('#camBtn').addEventListener('click', () => { if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) startCam(); else $('#sendCam').click(); });
+    $('.cam-btn', p.el).addEventListener('click', () => { if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) startCam(); else $('#sendCam').click(); });
+    $('#sendCam').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) onFile(p, f); });
     $('#camFlip').addEventListener('click', () => { facing = facing === 'environment' ? 'user' : 'environment'; startCam(); });
-    $('#camShot').addEventListener('click', () => { const v = $('video', pre); if (!v || !v.videoWidth) return; useSource(v, v.videoWidth, v.videoHeight); stopCam(); });
-    $('#camStop').addEventListener('click', () => { stopCam(); showData(); say(''); });
-    document.addEventListener('visibilitychange', () => { if (document.hidden && stream) { stopCam(); showData(); } });
-    const onFile = async e => {
-      const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
-      stopCam();
-      try {
-        let src;
-        if (window.createImageBitmap) { try { src = await createImageBitmap(f, { imageOrientation: 'from-image' }); } catch (er) { src = await createImageBitmap(f); } }
-        else src = await new Promise((res, rej) => { const fr = new FileReader(); fr.onerror = rej; fr.onload = () => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = fr.result; }; fr.readAsDataURL(f); });
-        useSource(src, src.width, src.height);
-      } catch (er) { say('この しゃしんは ひらけなかったよ。べつの しゃしんで ためしてね。', true); }
+    $('#camShot').addEventListener('click', () => {
+      const v = $('video', pre); if (!v || !v.videoWidth) return;
+      const k = Math.min(1, 512 / Math.max(v.videoWidth, v.videoHeight)), c = mkCanvas(Math.round(v.videoWidth * k), Math.round(v.videoHeight * k));
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); stopCam(); setSource(p, c, c.width, c.height); p.scan.scrollIntoView({ block: 'start' });
+    });
+    $('#camStop').addEventListener('click', () => { stopCam(); say(''); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden && stream) stopCam(); });
+    // しゃしんや 切りぬきが 変わるたびに よばれる
+    p.onChange = () => {
+      if (stream) stopCam(); if (busy) return; sent = false;
+      btn.disabled = !p.m; btn.textContent = '大きな 画面に おくる';
+      say(p.m ? '切りぬきを たしかめて、よければ おくってね。はみ出しは「手で なおす」で 直せるよ。' : '');
     };
-    $('#sendCam').addEventListener('change', onFile); $('#sendPick').addEventListener('change', onFile);
-    const fail = t => { clearTimeout(timer); busy = false; btn.disabled = !data; say(t, true); };
+    const fail = t => { clearTimeout(timer); busy = false; btn.disabled = !p.m; say(t, true); };
     function connect(then) {
       if (typeof Peer === 'undefined') return fail('この スマホでは おくれないよ。スタッフに 声を かけてね。');
       if (conn && conn.open) return then();
@@ -2951,21 +2950,25 @@ if (typeof module !== 'undefined') module.exports = Core;
         conn.on('open', then);
         conn.on('data', m => {
           if (!m || !busy) return;
-          if (m.t === 'ok') { clearTimeout(timer); busy = false; btn.disabled = false; btn.textContent = 'もう1回 おくる'; say('とどいたよ! 大きな 画面を 見てね。'); }
+          if (m.t === 'ok') { clearTimeout(timer); busy = false; sent = true; btn.disabled = false; btn.textContent = 'もう1回 おくる'; say('とどいたよ! 大きな 画面を 見てね。'); }
           else if (m.t === 'no') fail('いまは うけつけて いないよ。画面に QRが 出ているか たしかめてね。');
         });
       };
       if (peer.open) go(); else peer.once('open', go);
     }
     btn.addEventListener('click', () => {
-      if (!data || busy) return; busy = true; btn.disabled = true; say('おくっています…');
+      if (!p.m || busy) return; busy = true; btn.disabled = true; say('おくっています…');
       timer = setTimeout(() => { if (conn) { try { conn.close(); } catch (e) { } conn = null; } fail('つながらなかったよ。電波を たしかめて、もう1回 おしてね。'); }, 25000);
       connect(() => {
-        const id = Math.random().toString(36).slice(2), n = Math.ceil(data.length / CHUNK), name = $('#sendName').value.slice(0, 8);
-        for (let i = 0; i < n; i++) conn.send({ t: 'chunk', id, side, i, n, name, d: data.slice(i * CHUNK, (i + 1) * CHUNK) });
+        const data = p.tex.toDataURL('image/jpeg', 0.88), id = Math.random().toString(36).slice(2), n = Math.ceil(data.length / CHUNK), name = p.name.slice(0, 8);
+        for (let i = 0; i < n; i++) {
+          const msg = { t: 'chunk', id, side, i, n, name, d: data.slice(i * CHUNK, (i + 1) * CHUNK) };
+          if (i === 0) { msg.mw = p.mw; msg.mh = p.mh; msg.mask = packMask(p.mask); } // 手で 直した 切りぬきも いっしょに おくる
+          conn.send(msg);
+        }
       });
     });
-    connect(() => { if (!busy) say('じゅんび OK。しゃしんを とって おくってね。'); });
+    connect(() => { if (!busy && !p.m) say('じゅんび OK。しゃしんを とるか えらんでね。'); });
   }
 
   const Net = { peer: null, room: '', ready: false, accept: [false, false], bufs: new Map(), base: '' };
@@ -3013,43 +3016,63 @@ if (typeof module !== 'undefined') module.exports = Core;
     if (!b) { if (Net.bufs.size > 8) Net.bufs.clear(); b = { parts: new Array(n), got: 0 }; Net.bufs.set(key, b); }
     if (b.parts.length !== n || b.parts[i] !== undefined) return;
     b.parts[i] = m.d; b.got++;
+    if (i === 0 && typeof m.mask === 'string' && m.mask.length <= 8000) b.meta = { mw: m.mw | 0, mh: m.mh | 0, mask: m.mask };
     if (b.got < n) return;
     Net.bufs.delete(key); const url = b.parts.join('');
     if (!/^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(url)) return reply('no');
     const p = P[m.side], im = new Image();
     im.onload = () => {
       if (typeof m.name === 'string' && m.name.trim()) { p.name = m.name.slice(0, 8); $('.p-name', p.el).value = p.name; }
-      $('.qr', p.el).hidden = true; Net.accept[m.side] = false; setSource(p, im, im.naturalWidth, im.naturalHeight); reply('ok');
+      $('.qr', p.el).hidden = true; Net.accept[m.side] = false; setSource(p, im, im.naturalWidth, im.naturalHeight); applyMask(p, b.meta); reply('ok');
     };
     im.onerror = () => reply('no'); im.src = url;
   }
 
+  function applyMask(p, meta) { // スマホで 作った 切りぬきを そのまま 使う
+    if (!meta || meta.mw < 1 || meta.mh < 1 || meta.mw > 200 || meta.mh > 200) return;
+    const src = unpackMask(meta.mask, meta.mw * meta.mh); if (!src) return;
+    let mask = src;
+    if (meta.mw !== p.mw || meta.mh !== p.mh) {
+      mask = new Uint8Array(p.mw * p.mh);
+      for (let y = 0; y < p.mh; y++) for (let x = 0; x < p.mw; x++)
+        mask[y * p.mw + x] = src[Math.min(meta.mh - 1, Math.floor(y * meta.mh / p.mh)) * meta.mw + Math.min(meta.mw - 1, Math.floor(x * meta.mw / p.mw))];
+    }
+    p.mask = mask; p.segOk = undefined; analyze(p);
+  }
+
   /* ================= プレイヤーパネル ================= */
-  const poseChips = Object.keys(Core.POSES).map(k => `<button type="button" class="chip" data-pose="${k}">${Core.POSES[k].label}</button>`).join('');
-  $('#players').innerHTML = [0, 1].map(i => `
+  const poseChips = Object.keys(Core.POSES).map(k => `<button type="button" class="chip" data-pose="${k}">${Core.POSES[k].label}</button>`).join('') +
+    PRACTICE.map((x, k) => `<button type="button" class="chip" data-prac="${k}">${esc(x.label || 'しゃしん' + (k + 1))}</button>`).join('');
+  const panelHTML = i => `
     <article class="player" data-p="${i}" style="--pc:${CSSV[i]}">
       <div class="p-head"><span class="p-badge">${TEAM[i]}コマ</span>
         <input class="p-name" maxlength="8" placeholder="なまえ(8文字まで)" aria-label="${TEAM[i]}コマの なまえ"></div>
       <div class="scan"><canvas width="${PV}" height="${PV}" aria-label="${TEAM[i]}コマの 形"></canvas>
-        <div class="scan-empty"><p>ぜんしんが うつった しゃしんを えらんでね<small>むじの かべの 前で、頭から 足の先まで 入れて とると きれいに 切りぬけるよ</small></p></div>
-        <div class="qr" hidden><div class="qr-code"></div><p>スマホの カメラで よみとって<br>${TEAM[i]}コマの しゃしんを おくってね</p><small class="qr-net" role="status"></small><button type="button" class="chip qr-close">QRを とじる</button></div></div>
+        <div class="scan-empty"><p>${SENDER ? '「カメラで とる」か「アルバムから えらぶ」で しゃしんを 入れてね' : 'ぜんしんが うつった しゃしんを えらんでね<small>むじの かべの 前で、頭から 足の先まで 入れて とると きれいに 切りぬけるよ</small>'}</p></div>
+        ${SENDER ? '' : `<div class="qr" hidden><div class="qr-code"></div><p>スマホの カメラで よみとって<br>${TEAM[i]}コマの しゃしんを おくってね</p><small class="qr-net" role="status"></small><button type="button" class="chip qr-close">QRを とじる</button></div>`}</div>
       <div class="p-actions">
-        <label class="file"><input type="file" accept="image/*"><span>しゃしんを えらぶ</span></label>
-        <button type="button" class="qrbtn" disabled>スマホから おくる(QRを 出す)</button>
-        <div class="poses"><b>おためしポーズ</b>${poseChips}</div>
+        ${SENDER ? '<button type="button" class="bigbtn cam-btn">カメラで とる</button>' : ''}
+        <label class="file"><input type="file" accept="image/*"><span>${SENDER ? 'アルバムから えらぶ' : 'しゃしんを えらぶ'}</span></label>
+        ${SENDER ? '' : '<button type="button" class="qrbtn" disabled>スマホから おくる(QRを 出す)</button>'}
+        <div class="poses"><b>れんしゅう用</b>${poseChips}</div>
       </div>
       <div class="p-tune" hidden>
         <label>切りぬきの 強さ <input type="range" min="0" max="100" value="50" class="tol"></label>
         <label><input type="checkbox" class="fill"> うでや 足の すきまを うめる</label>
         <div class="brush"><span>手で なおす</span>
+          <button type="button" class="chip" data-b="del" aria-pressed="false">けす</button>
           <button type="button" class="chip" data-b="add" aria-pressed="false">ぬりたす</button>
-          <button type="button" class="chip" data-b="del" aria-pressed="false">けす</button></div>
+          <button type="button" class="chip redo">自動に もどす</button>
+          <small>「けす」か「ぬりたす」を えらんで、上の しゃしんを 指で なぞってね。</small></div>
+        <label>ブラシの 太さ <input type="range" min="2" max="12" value="5" class="bsize"></label>
       </div>
       <p class="p-msg" role="status"></p>
       <div class="p-stats" hidden></div>
-    </article>`).join('<div class="vs" aria-hidden="true">VS</div>');
+    </article>`;
+  if (SENDER) $('#senderPanel').innerHTML = panelHTML(SENDER.side);
+  else $('#players').innerHTML = [0, 1].map(panelHTML).join('<div class="vs" aria-hidden="true">VS</div>');
 
-  P.forEach(p => {
+  ACTIVE.forEach(p => {
     const el = p.el = $(`.player[data-p="${p.i}"]`);
     p.cv = $('canvas', el); p.scan = $('.scan', el);
     $('.p-name', el).addEventListener('input', e => { p.name = e.target.value; });
@@ -3058,7 +3081,13 @@ if (typeof module !== 'undefined') module.exports = Core;
       const im = Core.samplePose(b.dataset.pose, SHIRT[p.i]), c = mkCanvas(im.w, im.h);
       c.getContext('2d').putImageData(new ImageData(im.rgba, im.w, im.h), 0, 0); setSource(p, c, im.w, im.h);
     }));
+    el.querySelectorAll('[data-prac]').forEach(b => b.addEventListener('click', () => {
+      const im = new Image(); im.onload = () => setSource(p, im, im.naturalWidth, im.naturalHeight);
+      im.onerror = () => setMsg(p, 'れんしゅう用の しゃしんを 読みこめなかったよ。', true); im.src = PRACTICE[+b.dataset.prac].src;
+    }));
     $('.tol', el).addEventListener('input', e => { p.tol = e.target.value / 100; resegment(p); });
+    $('.bsize', el).addEventListener('input', e => { p.bsize = e.target.value / 100; });
+    $('.redo', el).addEventListener('click', () => resegment(p));
     $('.fill', el).addEventListener('change', e => { p.fill = e.target.checked; resegment(p); });
     el.querySelectorAll('[data-b]').forEach(b => b.addEventListener('click', () => {
       p.brush = p.brush === b.dataset.b ? null : b.dataset.b;
@@ -3070,7 +3099,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     const paint = e => {
       if (!p.mask || !p.view) return; const r = p.cv.getBoundingClientRect();
       const X = (e.clientX - r.left) / r.width * PV, Y = (e.clientY - r.top) / r.height * PV, k = p.tw / p.mw;
-      const mx = (X - p.view.ox) / p.view.s / k, my = (Y - p.view.oy) / p.view.s / k, br = Math.max(2, Math.max(p.mw, p.mh) * 0.035), v = p.brush === 'add' ? 1 : 0;
+      const mx = (X - p.view.ox) / p.view.s / k, my = (Y - p.view.oy) / p.view.s / k, br = Math.max(2, Math.max(p.mw, p.mh) * (p.bsize || 0.05)), v = p.brush === 'add' ? 1 : 0;
       for (let y = Math.max(0, Math.floor(my - br)); y <= Math.min(p.mh - 1, Math.ceil(my + br)); y++)
         for (let x = Math.max(0, Math.floor(mx - br)); x <= Math.min(p.mw - 1, Math.ceil(mx + br)); x++)
           if ((x - mx) * (x - mx) + (y - my) * (y - my) <= br * br) p.mask[y * p.mw + x] = v;
@@ -3095,9 +3124,10 @@ if (typeof module !== 'undefined') module.exports = Core;
   }
 
   function setSource(p, src, sw, sh) {
-    const tk = Math.min(1, 512 / Math.max(sw, sh)), mk = Math.min(1, 180 / Math.max(sw, sh));
+    const tk = Math.min(1, 512 / Math.max(sw, sh));
     p.tw = Math.max(1, Math.round(sw * tk)); p.th = Math.max(1, Math.round(sh * tk));
-    p.mw = Math.max(1, Math.round(sw * mk)); p.mh = Math.max(1, Math.round(sh * mk));
+    const mk = Math.min(1, 180 / Math.max(p.tw, p.th)); // 切りぬきの 大きさは 512px版から 決める(スマホと PCで そろう)
+    p.mw = Math.max(1, Math.round(p.tw * mk)); p.mh = Math.max(1, Math.round(p.th * mk));
     p.tex = mkCanvas(p.tw, p.th); p.tex.getContext('2d').drawImage(src, 0, 0, p.tw, p.th);
     const sc = mkCanvas(p.mw, p.mh), sx = sc.getContext('2d', { willReadFrequently: true });
     sx.imageSmoothingQuality = 'high'; sx.drawImage(p.tex, 0, 0, p.mw, p.mh);
@@ -3105,7 +3135,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     p.mc = p.cut = p.tint = null; p.tol = 0.5; $('.tol', p.el).value = 50;
     const s = Math.min(PV / p.tw, PV / p.th) * 0.96; p.view = { s, ox: (PV - p.tw * s) / 2, oy: (PV - p.th * s) / 2 };
     $('.scan-empty', p.el).hidden = true; $('.p-tune', p.el).hidden = false;
-    $('.qr', p.el).hidden = true; Net.accept[p.i] = false;
+    const q = $('.qr', p.el); if (q) { q.hidden = true; Net.accept[p.i] = false; }
     resegment(p);
   }
 
@@ -3128,7 +3158,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       $('.p-stats', p.el).hidden = true;
       setMsg(p, '人の 形を 見つけられなかったよ。「切りぬきの 強さ」を 動かすか、むじの かべの 前で とった しゃしんを ためしてね。', true);
     }
-    renderPreview(p, false); updateStart();
+    renderPreview(p, false); updateStart(); if (p.onChange) p.onChange();
   }
   function setMsg(p, t, bad) { const m = $('.p-msg', p.el); m.textContent = t; m.classList.toggle('bad', !!bad); }
   function updateStart() { const ok = P[0].m && P[1].m; $('#startBtn').disabled = !ok; $('#startHint').hidden = !!ok; }
@@ -3204,9 +3234,9 @@ if (typeof module !== 'undefined') module.exports = Core;
       rows.map(r => `<div class="stat"><div class="stat-h"><b>${r[0]}</b><small>${r[1]}</small><output>${r[2]}</output></div><div class="bar"><i style="width:${r[2]}%"></i></div></div>`).join('');
     box.hidden = false;
   }
-  P.forEach(p => renderPreview(p, false));
-  initHost();
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => P.forEach(p => { if (p.m) renderPreview(p, false); }));
+  ACTIVE.forEach(p => renderPreview(p, false));
+  if (SENDER) initSender(SENDER.room, SENDER.side); else initHost();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => ACTIVE.forEach(p => { if (p.m) renderPreview(p, false); }));
 
   /* ================= バトル ================= */
   const arena = $('#arena'), actx = arena.getContext('2d');
