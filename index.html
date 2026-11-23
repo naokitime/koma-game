@@ -2991,7 +2991,7 @@ if (typeof module !== 'undefined') module.exports = Core;
   });
 
   /* ================= スマホ ⇔ 大きな画面の つうしん ================= */
-  const CFG = window.KOMA_CONFIG || {}, PREFIX = 'ningenkoma-', CHUNK = 12000;
+  const CFG = window.KOMA_CONFIG || {}, PREFIX = 'ningenkoma-', CHUNK = 8000; // 1通 16KBまでの 決まりが あるので、小さく 分けて おくる
   const newPeer = id => (CFG.peer ? new Peer(id, CFG.peer) : id ? new Peer(id) : new Peer());
   const sendMatch = /^#send=([A-Z0-9]{6})\.([01])$/.exec(location.hash);
   const SENDER = sendMatch ? { room: sendMatch[1], side: +sendMatch[2] } : null, ACTIVE = SENDER ? [P[SENDER.side]] : P;
@@ -3004,7 +3004,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     const p = P[side]; document.body.classList.add('sender'); const box = $('#sender'); box.hidden = false; box.style.setProperty('--pc', CSSV[side]);
     $('#sendTitle').textContent = TEAM[side] + 'コマの しゃしんを おくる';
     const st = $('#sendSt'), btn = $('#sendBtn'), say = (t, bad) => { st.textContent = t; st.classList.toggle('bad', !!bad); };
-    let peer = null, conn = null, busy = false, timer = 0, sent = false;
+    let peer = null, conn = null, busy = false, sent = false, sendId = 0;
     const pre = $('#sendPre'), view = $('#camView');
     let stream = null, facing = 'environment';
     const stopCam = () => { if (stream) { stream.getTracks().forEach(tr => tr.stop()); stream = null; } view.hidden = true; pre.replaceChildren(); };
@@ -3038,35 +3038,46 @@ if (typeof module !== 'undefined') module.exports = Core;
       btn.disabled = !p.m; btn.textContent = '大きな 画面に おくる';
       say(p.m ? '切りぬきを たしかめて、よければ おくってね。はみ出しは「手で なおす」で 直せるよ。' : '');
     };
-    const fail = t => { clearTimeout(timer); busy = false; btn.disabled = !p.m; say(t, true); };
-    function connect(then) {
+    const fail = (t, code) => { busy = false; btn.disabled = !p.m; say(t + (code ? '(' + code + ')' : ''), true); };
+    const WHY = {
+      'peer-unavailable': '大きな 画面が 見つからないよ。画面の QRを もう1回 読みとってね。',
+      'no': 'いまは うけつけて いないよ。大きな 画面に QRが 出ているか たしかめてね。',
+      'browser-incompatible': 'この ブラウザでは おくれないよ。Safariか Chromeで ひらいてね。',
+      'timeout': 'つながらなかったよ。Wi-Fiを 切りかえるか、電波の よい ところで もう1回 おしてね。'
+    };
+    // おくるたびに 新しく つなぎ直す(カメラや アルバムを ひらくと、前の 接続が 切れている ことが あるため)。だめなら 1回だけ やり直す
+    function attempt(k) {
+      if (peer) { try { peer.destroy(); } catch (e) { } } peer = conn = null;
       if (typeof Peer === 'undefined') return fail('この スマホでは おくれないよ。スタッフに 声を かけてね。');
-      if (conn && conn.open) return then();
-      if (!peer || peer.destroyed) { peer = newPeer(); peer.on('error', () => { if (busy) fail('つながらなかったよ。電波を たしかめて、もう1回 おしてね。'); }); }
-      const go = () => {
-        conn = peer.connect(PREFIX + room, { reliable: true, serialization: 'json' });
-        conn.on('open', then);
-        conn.on('data', m => {
-          if (!m || !busy) return;
-          if (m.t === 'ok') { clearTimeout(timer); busy = false; sent = true; btn.disabled = false; btn.textContent = 'もう1回 おくる'; say('とどいたよ! 大きな 画面を 見てね。'); }
-          else if (m.t === 'no') fail('いまは うけつけて いないよ。画面に QRが 出ているか たしかめてね。');
-        });
+      const my = ++sendId; let done = false;
+      const stop = why => {
+        if (my !== sendId || done) return; done = true; clearTimeout(tm);
+        if (k < 1 && why !== 'peer-unavailable' && why !== 'no' && why !== 'browser-incompatible') { say('もう1回 ためして います…'); attempt(k + 1); }
+        else fail(WHY[why] || 'つながらなかったよ。電波を たしかめて、もう1回 おしてね。', WHY[why] && why !== 'timeout' ? '' : why);
       };
-      if (peer.open) go(); else peer.once('open', go);
-    }
-    btn.addEventListener('click', () => {
-      if (!p.m || busy) return; busy = true; btn.disabled = true; say('おくっています…');
-      timer = setTimeout(() => { if (conn) { try { conn.close(); } catch (e) { } conn = null; } fail('つながらなかったよ。電波を たしかめて、もう1回 おしてね。'); }, 25000);
-      connect(() => {
-        const data = p.tex.toDataURL('image/jpeg', 0.88), id = Math.random().toString(36).slice(2), n = Math.ceil(data.length / CHUNK), name = p.name.slice(0, 8);
-        for (let i = 0; i < n; i++) {
-          const msg = { t: 'chunk', id, side, i, n, name, d: data.slice(i * CHUNK, (i + 1) * CHUNK) };
-          if (i === 0) { msg.mw = p.mw; msg.mh = p.mh; msg.mask = packMask(p.mask); } // 手で 直した 切りぬきも いっしょに おくる
-          conn.send(msg);
-        }
+      const tm = setTimeout(() => stop('timeout'), 15000);
+      try { peer = newPeer(); } catch (e) { return stop('browser-incompatible'); }
+      peer.on('error', e => stop((e && e.type) || 'error'));
+      peer.on('open', () => {
+        if (my !== sendId || done) return;
+        conn = peer.connect(PREFIX + room, { reliable: true, serialization: 'json' });
+        conn.on('error', e => stop((e && e.type) || 'conn-error'));
+        conn.on('data', m => {
+          if (my !== sendId || done || !m) return;
+          if (m.t === 'ok') { done = true; clearTimeout(tm); busy = false; sent = true; btn.disabled = false; btn.textContent = 'もう1回 おくる'; say('とどいたよ! 大きな 画面を 見てね。'); }
+          else if (m.t === 'no') stop('no');
+        });
+        conn.on('open', () => {
+          if (my !== sendId || done) return;
+          // しゃしん・手で 直した 切りぬき・なまえを 1つに まとめ、小さく 分けて おくる
+          const body = JSON.stringify({ img: p.tex.toDataURL('image/jpeg', 0.88), mw: p.mw, mh: p.mh, mask: packMask(p.mask), name: p.name.slice(0, 8) });
+          const id = Math.random().toString(36).slice(2), n = Math.ceil(body.length / CHUNK);
+          for (let i = 0; i < n; i++) conn.send({ t: 'chunk', id, side, i, n, d: body.slice(i * CHUNK, (i + 1) * CHUNK) });
+        });
       });
-    });
-    connect(() => { if (!busy && !p.m) say('じゅんび OK。しゃしんを とるか えらんでね。'); });
+    }
+    btn.addEventListener('click', () => { if (!p.m || busy) return; busy = true; btn.disabled = true; say('おくっています…'); attempt(0); });
+    say('しゃしんを とるか えらんでね。');
   }
 
   const Net = { peer: null, room: '', ready: false, accept: [false, false], bufs: new Map(), base: '' };
@@ -3114,16 +3125,16 @@ if (typeof module !== 'undefined') module.exports = Core;
     if (!b) { if (Net.bufs.size > 8) Net.bufs.clear(); b = { parts: new Array(n), got: 0 }; Net.bufs.set(key, b); }
     if (b.parts.length !== n || b.parts[i] !== undefined) return;
     b.parts[i] = m.d; b.got++;
-    if (i === 0 && typeof m.mask === 'string' && m.mask.length <= 8000) b.meta = { mw: m.mw | 0, mh: m.mh | 0, mask: m.mask };
     if (b.got < n) return;
-    Net.bufs.delete(key); const url = b.parts.join('');
-    if (!/^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(url)) return reply('no');
+    Net.bufs.delete(key); let o = null; try { o = JSON.parse(b.parts.join('')); } catch (e) { }
+    if (!o || typeof o.img !== 'string' || !/^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(o.img)) return reply('no');
+    const meta = typeof o.mask === 'string' && o.mask.length <= 8000 ? { mw: o.mw | 0, mh: o.mh | 0, mask: o.mask } : null;
     const p = P[m.side], im = new Image();
     im.onload = () => {
-      if (typeof m.name === 'string' && m.name.trim()) { p.name = m.name.slice(0, 8); $('.p-name', p.el).value = p.name; }
-      $('.qr', p.el).hidden = true; Net.accept[m.side] = false; setSource(p, im, im.naturalWidth, im.naturalHeight); applyMask(p, b.meta); reply('ok');
+      if (typeof o.name === 'string' && o.name.trim()) { p.name = o.name.slice(0, 8); $('.p-name', p.el).value = p.name; }
+      $('.qr', p.el).hidden = true; Net.accept[m.side] = false; setSource(p, im, im.naturalWidth, im.naturalHeight); applyMask(p, meta); reply('ok');
     };
-    im.onerror = () => reply('no'); im.src = url;
+    im.onerror = () => reply('no'); im.src = o.img;
   }
 
   function applyMask(p, meta) { // スマホで 作った 切りぬきを そのまま 使う
