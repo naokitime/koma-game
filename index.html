@@ -124,7 +124,10 @@ body.sender .top-side,body.sender main{display:none}
 .send h2{font-family:var(--display);font-weight:400;font-size:1.6rem;margin:0;color:var(--pc)}
 .send .p-name{width:100%;font-size:1.05rem}
 .send-pre{background:var(--scan);border-radius:14px;aspect-ratio:3/4;display:grid;place-content:center;overflow:hidden;color:#dfe9f5;font-weight:700;text-align:center;padding:0}
-.send-pre img{width:100%;height:100%;object-fit:contain;display:block}
+.send-pre img,.send-pre video{width:100%;height:100%;object-fit:contain;display:block}
+.bigbtn{display:block;width:100%;border:0;cursor:pointer;text-align:center;background:var(--pc);color:var(--on-pc);font-weight:900;font-size:1.15rem;border-radius:14px;padding:.65em 1em}
+.cam-bar{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}
+.cam-bar .cta{width:auto;font-size:1.4rem}
 .send-pre p{margin:0;padding:18px}
 .send .cta{width:100%}
 .send-st{margin:0;font-weight:900;min-height:1.7em;text-align:center}
@@ -221,9 +224,15 @@ body.fight .top{margin-bottom:10px;justify-content:flex-end}
       <li>頭から 足の先まで 入るように とってね</li>
       <li>むじの かべや 幕の 前で とると きれいに 切りぬけるよ</li>
     </ul>
-    <label class="file"><input type="file" accept="image/*" capture="environment" id="sendCam"><span>カメラで とる</span></label>
+    <button type="button" class="bigbtn" id="camBtn">カメラで とる</button>
+    <input type="file" accept="image/*" capture="environment" id="sendCam" hidden>
     <label class="file"><input type="file" accept="image/*" id="sendPick"><span>アルバムから えらぶ</span></label>
     <div class="send-pre" id="sendPre"><p>ここに しゃしんが 出るよ</p></div>
+    <div class="cam-bar" id="camBar" hidden>
+      <button type="button" class="chip" id="camFlip">カメラを 切りかえる</button>
+      <button type="button" class="cta" id="camShot">シャッター</button>
+      <button type="button" class="chip" id="camStop">やめる</button>
+    </div>
     <input class="p-name" id="sendName" maxlength="8" placeholder="なまえ(8文字まで・なくても OK)" aria-label="なまえ">
     <button class="cta" id="sendBtn" type="button" disabled>大きな 画面に おくる</button>
     <p class="send-st" id="sendSt" role="status"></p>
@@ -2890,16 +2899,45 @@ if (typeof module !== 'undefined') module.exports = Core;
     $('#sendTitle').textContent = TEAM[side] + 'コマの しゃしんを おくる';
     const st = $('#sendSt'), btn = $('#sendBtn'), say = (t, bad) => { st.textContent = t; st.classList.toggle('bad', !!bad); };
     let data = null, peer = null, conn = null, busy = false, timer = 0;
+    const pre = $('#sendPre'), bar = $('#camBar');
+    let stream = null, facing = 'environment';
+    const stopCam = () => { if (stream) { stream.getTracks().forEach(tr => tr.stop()); stream = null; } bar.hidden = true; };
+    const showData = () => {
+      if (data) { const im = new Image(); im.alt = 'えらんだ しゃしん'; im.src = data; pre.replaceChildren(im); }
+      else { const p = document.createElement('p'); p.textContent = 'ここに しゃしんが 出るよ'; pre.replaceChildren(p); }
+    };
+    const useSource = (src, w, h) => {
+      const k = Math.min(1, 720 / Math.max(w, h)), c = mkCanvas(Math.round(w * k), Math.round(h * k));
+      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height); data = c.toDataURL('image/jpeg', 0.85);
+      showData(); btn.disabled = false; btn.textContent = '大きな 画面に おくる'; say('これで よければ「大きな 画面に おくる」を おしてね。');
+    };
+    // ページの中で カメラを 起動する(ブラウザに カメラの 許可を もらう)
+    async function startCam() {
+      stopCam();
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 1280 } } }); }
+      catch (er) {
+        say(er && (er.name === 'NotAllowedError' || er.name === 'SecurityError') ? 'カメラの 許可が ひつようだよ。ブラウザの せっていで カメラを 許可するか、「アルバムから えらぶ」を 使ってね。'
+          : 'カメラを ひらけなかったよ。「アルバムから えらぶ」を 使ってね。', true);
+        showData(); return;
+      }
+      const v = document.createElement('video'); v.muted = true; v.autoplay = true; v.playsInline = true; v.setAttribute('playsinline', '');
+      if (facing === 'user') v.style.transform = 'scaleX(-1)';
+      v.srcObject = stream; pre.replaceChildren(v); try { await v.play(); } catch (er) { }
+      bar.hidden = false; say('ぜんしんが 入ったら シャッターを おしてね。'); pre.scrollIntoView({ block: 'center' });
+    }
+    $('#camBtn').addEventListener('click', () => { if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) startCam(); else $('#sendCam').click(); });
+    $('#camFlip').addEventListener('click', () => { facing = facing === 'environment' ? 'user' : 'environment'; startCam(); });
+    $('#camShot').addEventListener('click', () => { const v = $('video', pre); if (!v || !v.videoWidth) return; useSource(v, v.videoWidth, v.videoHeight); stopCam(); });
+    $('#camStop').addEventListener('click', () => { stopCam(); showData(); say(''); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden && stream) { stopCam(); showData(); } });
     const onFile = async e => {
       const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
+      stopCam();
       try {
         let src;
         if (window.createImageBitmap) { try { src = await createImageBitmap(f, { imageOrientation: 'from-image' }); } catch (er) { src = await createImageBitmap(f); } }
         else src = await new Promise((res, rej) => { const fr = new FileReader(); fr.onerror = rej; fr.onload = () => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = fr.result; }; fr.readAsDataURL(f); });
-        const k = Math.min(1, 720 / Math.max(src.width, src.height)), c = mkCanvas(Math.round(src.width * k), Math.round(src.height * k));
-        c.getContext('2d').drawImage(src, 0, 0, c.width, c.height); data = c.toDataURL('image/jpeg', 0.85);
-        const im = new Image(); im.alt = 'えらんだ しゃしん'; im.src = data; $('#sendPre').replaceChildren(im);
-        btn.disabled = false; btn.textContent = '大きな 画面に おくる'; say('');
+        useSource(src, src.width, src.height);
       } catch (er) { say('この しゃしんは ひらけなかったよ。べつの しゃしんで ためしてね。', true); }
     };
     $('#sendCam').addEventListener('change', onFile); $('#sendPick').addEventListener('change', onFile);
