@@ -144,6 +144,12 @@ body.fight .top{margin-bottom:10px;justify-content:flex-end}
 @media (min-width:900px){.hud{grid-template-columns:1fr}}
 .hud-p{background:var(--surface);border:3px solid var(--pc);border-radius:14px;padding:8px 12px;min-width:0}
 .hud-name{font-family:var(--display);font-size:1.1rem;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pct{display:flex;align-items:baseline;gap:2px;font-family:var(--display);line-height:1.1;color:color-mix(in srgb,var(--red) calc(var(--heat,0)*100%),var(--ink));transition:transform .12s ease-out}
+.pct output{font-size:clamp(2.2rem,6vw,3.4rem)}
+.pct small{font-size:1.2rem}
+.pct.pop{transform:scale(1.22);transition:none}
+.hud-p{position:relative}
+.hud-cap{font-size:.75rem;font-weight:900;color:var(--muted)}
 .g{display:grid;grid-template-columns:5.4em 1fr;white-space:nowrap;align-items:center;gap:6px;font-size:.8rem;font-weight:900;margin-top:4px}
 .g .bar{height:14px}
 .g.sp .bar i{background:var(--gold)}
@@ -196,10 +202,10 @@ body.fight .top{margin-bottom:10px;justify-content:flex-end}
         <dl>
           <div><dt>線対称 → スタミナ</dt><dd>重心を 通る 線で 形を おり返して、ぴったり 重なる わりあいを はかる。左右の 重さが そろうと 回転が ぶれにくく、長く 回る。</dd></div>
           <div><dt>重心 → あんてい</dt><dd>体を かこむ 円の 中心が コマの じく。重心(重さの まん中)が じくに 近いほど、ふらつかない。</dd></div>
-          <div><dt>丸さ → たいきゅう</dt><dd>かこむ 円を 体が どれだけ うめているか。丸いほど 重くて 当たりに 強く、たいりょくが 多い。</dd></div>
+          <div><dt>丸さ → たいきゅう</dt><dd>かこむ 円を 体が どれだけ うめているか。丸いほど 重くて 当たりに 強く、ダメージが たまっても ふっとびにくい。</dd></div>
           <div><dt>トゲトゲ → こうげき</dt><dd>じくから 遠く つき出た 手足の 数と するどさ。回る ものは 先っぽほど 速く 動くので、トゲの 先が 当たると 大ダメージ。ただし 自分の 回転も へる。</dd></div>
         </dl>
-        <p>たまに 出る「スマッシュ」は、いつもの 3倍の 強さで はじく 当たり。そのいきおいで かべに ぶつかると 場外負け。丸くて 重い コマほど 飛ばされにくい。</p>
+        <p>当たるたびに ダメージ(%)が たまり、たまるほど 大きく ふっとぶ。げんかいを こえると、とどめの 一発で 場外へ。丸くて 重い コマほど げんかいが 高く、飛ばされにくい。たまに 出る「スマッシュ」は いつもの 3倍の 強さで、早い うちに 場外に なることも ある。</p>
         <p>しゃしんは この画面の 中だけで 計算します。スマホから おくる ときは、スマホと この画面を 暗号化した 通信で つないで とどけ、サーバーには 保存しません。ページを とじると 消えます。</p>
       </details>
     </section>
@@ -2785,7 +2791,7 @@ const Core = (function () {
   }
 
   /* ---------- バトルの物理 ---------- */
-  const PRM = { pull0: 2.4, pullDef: 2.2, drive0: 0.5, driveAtk: 1.6, attract: 2.2, wobStab: 1.3, fric: 0.55, wallSpin: 0.0008, dec0: 0.012, decSta: 0.022, decStab: 0.012, hp0: 100, hpDef: 110, dmg: 6.5, atk0: 0.5, rec0: 0.002, recAtk: 0.009, recDmg: 0.0006, outSpeed: 2.1, outWindow: 0.8, smashP: 0.025, smashMul: 3.0 };
+  const PRM = { pull0: 2.4, pullDef: 2.2, drive0: 0.5, driveAtk: 1.6, attract: 2.2, wobStab: 1.3, fric: 0.55, wallSpin: 0.0008, dec0: 0.012, decSta: 0.022, decStab: 0.012, hp0: 100, hpDef: 110, dmg: 6.5, atk0: 0.5, rec0: 0.002, recAtk: 0.009, recDmg: 0.0006, outSpeed: 2.3, outWindow: 0.8, smashP: 0.02, smashMul: 3.0, kbPct: 0.6, finishSpeed: 5 };
   function createBattle(SA, SB, rng) {
     rng = rng || Math.random;
     const RHO = 0.29;
@@ -2836,7 +2842,7 @@ const Core = (function () {
       }
       if (tops[0].out || tops[1].out) {
         st.over = { winner: tops[0].out && tops[1].out ? -1 : tops[0].out ? 1 : 0, reason: 'out' };
-        if (events) tops.forEach((t, i) => { if (t.out) events.push({ type: 'out', i, x: t.x, y: t.y }); });
+        if (events) tops.forEach((t, i) => { if (t.out) events.push({ type: 'out', i, x: t.x, y: t.y, finish: false }); });
         return;
       }
       const A = tops[0], B = tops[1];
@@ -2851,18 +2857,29 @@ const Core = (function () {
           const smash = rng() < PRM.smashP; // たまに 出る 強い はじき
           const J = (0.35 + 0.9 * (A.spin + B.spin) / 2) * (0.7 + 0.6 * rng()) * (smash ? PRM.smashMul : 1), k = 0.3 * J;
           A.sinceHit = B.sinceHit = 0;
-          A.vx += (-nx * J - ny * k) / A.mass; A.vy += (-ny * J + nx * k) / A.mass;
-          B.vx += (nx * J + ny * k) / B.mass; B.vy += (ny * J - nx * k) / B.mass;
+
           // ダメージ=こうげき力 × 回転の速さ × 当たった場所の半径(先っぽほど速い)
           const dmg = (t, r) => PRM.dmg * (PRM.atk0 + t.s.atk) * (0.3 + 0.7 * t.spin) * (0.45 + 0.55 * r) * (0.5 + rng()) * t.luck;
           const dB = dmg(A, ra), dA = dmg(B, rb);
           A.hp -= dA; B.hp -= dB; A.flash = B.flash = 0.12;
+          // ダメージが たまっているほど 大きく ふっとぶ
+          const ka = (1 + PRM.kbPct * Math.min(1, 1 - A.hp / A.maxHp)) / A.mass, kb = (1 + PRM.kbPct * Math.min(1, 1 - B.hp / B.maxHp)) / B.mass;
+          A.vx += (-nx * J - ny * k) * ka; A.vy += (-ny * J + nx * k) * ka;
+          B.vx += (nx * J + ny * k) * kb; B.vy += (ny * J - nx * k) * kb;
+          if (A.hp <= 0 || B.hp <= 0) { // ダメージが げんかい → とどめの 一発で 場外へ
+            const la = left(A), lb = left(B), tie = A.hp <= 0 && B.hp <= 0 && Math.abs(la - lb) < 0.02;
+            const outA = tie || (A.hp <= 0 && (B.hp > 0 || la <= lb)), outB = tie || (!outA && B.hp <= 0) ;
+            if (events) events.push({ type: 'hit', x: A.x + nx * RHO * ra, y: A.y + ny * RHO * ra, dA, dB, smash: true });
+            if (outA) { A.out = A.finish = true; A.vx = -nx * PRM.finishSpeed; A.vy = -ny * PRM.finishSpeed; if (events) events.push({ type: 'out', i: 0, x: A.x, y: A.y, finish: true }); }
+            if (outB) { B.out = B.finish = true; B.vx = nx * PRM.finishSpeed; B.vy = ny * PRM.finishSpeed; if (events) events.push({ type: 'out', i: 1, x: B.x, y: B.y, finish: true }); }
+            st.over = { winner: tie ? -1 : outA ? 1 : 0, reason: 'out', finish: true }; return;
+          }
           A.spin -= PRM.rec0 + PRM.recAtk * A.s.atk + PRM.recDmg * dA; // トゲが多いほど自分の回転も失う
           B.spin -= PRM.rec0 + PRM.recAtk * B.s.atk + PRM.recDmg * dB;
           if (events) events.push({ type: 'hit', x: A.x + nx * RHO * ra, y: A.y + ny * RHO * ra, dA, dB, smash });
         }
       }
-      const dead = tops.map(t => (t.hp <= 0 ? 'hp' : t.spin <= 0.04 ? 'spin' : null));
+      const dead = tops.map(t => (t.spin <= 0.04 ? 'spin' : null));
       if (dead[0] && dead[1]) { const a = left(A), b = left(B); st.over = { winner: Math.abs(a - b) < 0.02 ? -1 : a > b ? 0 : 1, reason: 'both' }; }
       else if (dead[0]) st.over = { winner: 1, reason: dead[0] };
       else if (dead[1]) st.over = { winner: 0, reason: dead[1] };
@@ -2899,6 +2916,20 @@ if (typeof module !== 'undefined') module.exports = Core;
       o.connect(g).connect(c.destination); o.start(t); o.stop(t + d + 0.02);
     },
     hit(pw) { this.tone(900 + Math.random() * 900, 0.09, 'triangle', Math.min(0.3, 0.08 + pw * 0.012)); this.tone(180, 0.12, 'square', Math.min(0.2, 0.04 + pw * 0.008), 60); },
+    noiseBuf() { const c = this.ctx; if (!this.nb) { const b = c.createBuffer(1, c.sampleRate * 0.4, c.sampleRate), d = b.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; this.nb = b; } return this.nb; },
+    // 金ぞくバットで 打ったような 高い ひびき(合成)
+    kakiin() {
+      if (!this.on || !this.ctx) return; const c = this.ctx, t = c.currentTime;
+      const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(); s.buffer = this.noiseBuf(); f.type = 'highpass'; f.frequency.value = 3500;
+      g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05); s.connect(f).connect(g).connect(c.destination); s.start(t); s.stop(t + 0.08);
+      [[1760, 0.26, 1.1], [2794, 0.17, 0.9], [4186, 0.11, 0.7], [5588, 0.07, 0.5], [7459, 0.04, 0.35]].forEach(p => {
+        const o = c.createOscillator(), og = c.createGain(); o.type = 'sine'; o.frequency.setValueAtTime(p[0] * 1.012, t); o.frequency.exponentialRampToValueAtTime(p[0], t + 0.05);
+        og.gain.setValueAtTime(0.0001, t); og.gain.exponentialRampToValueAtTime(p[1], t + 0.004); og.gain.exponentialRampToValueAtTime(0.0005, t + p[2]);
+        o.connect(og).connect(c.destination); o.start(t); o.stop(t + p[2] + 0.05);
+      });
+      this.tone(220, 0.14, 'sine', 0.3, 55);
+      setTimeout(() => this.tone(500, 0.7, 'sawtooth', 0.07, 2600), 180); // 飛んでいく 音
+    },
     win() { [523, 659, 784, 1047].forEach((f, k) => setTimeout(() => this.tone(f, 0.25, 'triangle', 0.18), k * 130)); }
   };
   /* バトルBGM:その場で 音を 合成して ならす(音源ファイルは 使わない) */
@@ -3326,7 +3357,7 @@ if (typeof module !== 'undefined') module.exports = Core;
   /* ================= バトル ================= */
   const arena = $('#arena'), actx = arena.getContext('2d');
   let battle = null, phase = 'idle', raf = 0, last = 0, acc = 0, token = 0, spinUp = 0;
-  let sparks = [], nums = [], shake = 0, endSpin = [1, 1], confetti = [], celeT0 = 0;
+  let sparks = [], nums = [], shake = 0, endSpin = [1, 1], confetti = [], celeT0 = 0, hitStop = 0, flash = 0, blasts = [];
   const H = 1 / 240;
 
   function sizeArena() {
@@ -3337,9 +3368,9 @@ if (typeof module !== 'undefined') module.exports = Core;
 
   function buildHud() {
     $('#hud').innerHTML = P.map(p => `<div class="hud-p" style="--pc:${CSSV[p.i]}" data-p="${p.i}"><span class="hud-name">${esc(dispName(p))}</span>
-      <div class="g hp"><span>たいりょく</span><div class="bar"><i style="width:100%"></i></div></div>
+      <div class="pct"><output>0</output><small>%</small></div><span class="hud-cap">ダメージ(たまるほど ふっとぶ)</span>
       <div class="g sp"><span>回転</span><div class="bar"><i style="width:100%"></i></div></div></div>`).join('');
-    P.forEach(p => { const h = $(`.hud-p[data-p="${p.i}"]`); p.hpBar = $('.hp i', h); p.spBar = $('.sp i', h); });
+    P.forEach(p => { const h = $(`.hud-p[data-p="${p.i}"]`); p.pctEl = $('.pct', h); p.pctNum = $('.pct output', h); p.spBar = $('.sp i', h); p.pctShown = -1; });
   }
 
   function startBattle() {
@@ -3375,14 +3406,16 @@ if (typeof module !== 'undefined') module.exports = Core;
     const dt = Math.min(0.05, (ts - last) / 1000); last = ts;
     if (phase === 'count') { spinUp = Math.min(1, spinUp + dt / 2.6); battle.tops.forEach(t => { t.ang += dt * (3 + 13) * spinUp; }); }
     else if (phase === 'fight') {
-      acc += dt; const ev = [];
+      if (hitStop > 0) { hitStop -= dt; } else acc += dt; // 強い 当たりは 一瞬 止まって 見せる
+      const ev = [];
       while (acc >= H) { battle.step(H, ev); acc -= H; }
       for (const e of ev) onEvent(e);
       if (battle.over) finish();
     } else if (phase === 'end') {
+      if (hitStop > 0) hitStop -= dt;
       battle.tops.forEach((t, i) => {
         if (t.flash > 0) t.flash -= dt;
-        if (t.out) { t.x += t.vx * dt; t.y += t.vy * dt; t.ang += dt * (3 + 13 * Math.max(0.3, t.spin)); return; } // 場外へ 飛んでいく
+        if (t.out) { if (hitStop > 0) return; t.x += t.vx * dt; t.y += t.vy * dt; t.ang += dt * (3 + 13 * Math.max(0.3, t.spin)); return; } // 場外へ 飛んでいく
         const lose = battle.over.winner !== i; endSpin[i] = lose ? Math.max(0, endSpin[i] - dt * 1.4) : 1; t.ang += dt * (3 + 13 * Math.max(0.3, t.spin)) * (lose ? endSpin[i] * 0.6 : 1);
       });
     }
@@ -3391,25 +3424,33 @@ if (typeof module !== 'undefined') module.exports = Core;
     sparks = sparks.filter(s => s.life > 0);
     for (const n of nums) { n.y -= dt * 0.18; n.life -= dt; }
     nums = nums.filter(n => n.life > 0);
-    shake = Math.max(0, shake - dt * 30);
+    shake = Math.max(0, shake - dt * 30); flash = Math.max(0, flash - dt * 3.2);
+    for (const b of blasts) b.life -= dt; blasts = blasts.filter(b => b.life > 0);
     draw();
-    P.forEach((p, i) => { const t = battle.tops[i]; p.hpBar.style.width = Math.max(0, t.hp / t.maxHp * 100) + '%'; p.spBar.style.width = Math.max(0, t.spin * 100) + '%'; });
+    P.forEach((p, i) => {
+      const t = battle.tops[i], d = Math.round(t.maxHp - t.hp);
+      if (d !== p.pctShown) { p.pctShown = d; p.pctNum.textContent = d; p.pctEl.style.setProperty('--heat', Math.min(1, d / t.maxHp).toFixed(2)); }
+      p.spBar.style.width = Math.max(0, t.spin * 100) + '%';
+    });
     if (phase !== 'idle') raf = requestAnimationFrame(frame);
   }
 
   function onEvent(e) {
     if (e.type === 'hit') {
       const pw = (e.dA + e.dB) * (e.smash ? 2.5 : 1); Snd.hit(pw); if (!reduce) shake = Math.min(e.smash ? 24 : 14, shake + pw * 0.5);
-      if (e.smash) { Snd.tone(90, 0.35, 'sawtooth', 0.2, 40); nums.push({ x: e.x, y: e.y - 0.1, t: 'スマッシュ!', life: 1.1, c: '#f0b113', big: true }); }
+      if (e.smash) { Snd.tone(90, 0.35, 'sawtooth', 0.2, 40); nums.push({ x: e.x, y: e.y - 0.1, t: 'スマッシュ!', life: 1.1, c: '#f0b113', big: true }); if (!reduce) { hitStop = 0.13; flash = Math.max(flash, 0.5); } }
+      else if (pw > 15 && !reduce) hitStop = 0.05;
       const n = Math.min(e.smash ? 60 : 26, 6 + Math.round(pw));
       for (let k = 0; k < n; k++) { const a = Math.random() * TAU, v = 0.5 + Math.random() * 1.6; sparks.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.25 + Math.random() * 0.3, c: Math.random() < 0.5 ? '#fff6c8' : '#ffc83a' }); }
       const A = battle.tops[0], B = battle.tops[1];
-      nums.push({ x: A.x, y: A.y - 0.18, t: '-' + Math.max(1, Math.round(e.dA)), life: 0.8, c: COL[0], big: e.dA > 9 });
-      nums.push({ x: B.x, y: B.y - 0.18, t: '-' + Math.max(1, Math.round(e.dB)), life: 0.8, c: COL[1], big: e.dB > 9 });
-    } else if (e.type === 'out') {
-      Snd.tone(700, 0.5, 'sawtooth', 0.16, 120); const cnt = $('#count'), my = token; cnt.className = ''; cnt.textContent = '場外!';
-      setTimeout(() => { if (my === token) cnt.textContent = ''; }, 1200);
-      for (let k = 0; k < 30; k++) { const a = Math.random() * TAU, v = 0.6 + Math.random() * 1.8; sparks.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.3 + Math.random() * 0.4, c: '#fff' }); }
+      nums.push({ x: A.x, y: A.y - 0.18, t: '+' + Math.max(1, Math.round(e.dA)) + '%', life: 0.8, c: COL[0], big: e.dA > 9 });
+      nums.push({ x: B.x, y: B.y - 0.18, t: '+' + Math.max(1, Math.round(e.dB)) + '%', life: 0.8, c: COL[1], big: e.dB > 9 });
+      [[P[0], e.dA], [P[1], e.dB]].forEach(a => { if (a[1] > 4 && a[0].pctEl) { a[0].pctEl.classList.add('pop'); setTimeout(() => a[0].pctEl.classList.remove('pop'), 90); } });
+    } else if (e.type === 'out') { // 場外へ:カキーン! 一瞬 止まって、光の すじを 引いて 飛んでいく
+      Snd.kakiin(); const tp = battle.tops[e.i];
+      if (!reduce) { hitStop = 0.28; flash = 1; shake = 26; }
+      blasts.push({ x: e.x, y: e.y, a: Math.atan2(tp.vy, tp.vx), life: 1.1, c: COL[e.i] });
+      for (let k = 0; k < 44; k++) { const a = Math.random() * TAU, v = 0.8 + Math.random() * 2.4; sparks.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.35 + Math.random() * 0.5, c: k % 2 ? '#fff' : '#ffc83a' }); }
     } else if (e.type === 'wall') {
       Snd.tone(140, 0.06, 'sine', 0.06);
       for (let k = 0; k < 4; k++) { const a = Math.random() * TAU; sparks.push({ x: e.x, y: e.y, vx: Math.cos(a) * 0.5, vy: Math.sin(a) * 0.5, life: 0.2, c: '#fff' }); }
@@ -3417,8 +3458,13 @@ if (typeof module !== 'undefined') module.exports = Core;
   }
 
   function finish() {
-    phase = 'end'; const o = battle.over, my = token; Bgm.stop();
-    setTimeout(() => { if (my !== token) return; phase = 'cele'; celeT0 = performance.now() / 1000; confetti = []; if (o.winner >= 0 && !reduce) for (let k = 0; k < 90; k++) confetti.push({ x: Math.random(), y: -Math.random(), v: 0.18 + Math.random() * 0.25, w: Math.random() * TAU, c: ['#f0b113', '#e23d4b', '#1c7ed6', '#ffffff', '#3fbf7f'][k % 5] }); showResult(o); }, 1300);
+    phase = 'end'; const o = battle.over, my = token, cnt = $('#count'), wait = o.reason === 'out' ? 700 : 250; Bgm.stop();
+    setTimeout(() => { if (my !== token) return; cnt.className = 'small'; cnt.textContent = 'ゲームセット!'; Snd.tone(660, 0.5, 'square', 0.1); Voice.say('ゲームセット!', () => { }, 3000); }, wait);
+    setTimeout(() => {
+      if (my !== token) return; cnt.textContent = ''; cnt.className = ''; phase = 'cele'; celeT0 = performance.now() / 1000; confetti = [];
+      if (o.winner >= 0 && !reduce) for (let k = 0; k < 90; k++) confetti.push({ x: Math.random(), y: -Math.random(), v: 0.18 + Math.random() * 0.25, w: Math.random() * TAU, c: ['#f0b113', '#e23d4b', '#1c7ed6', '#ffffff', '#3fbf7f'][k % 5] });
+      showResult(o);
+    }, wait + 1500);
   }
 
   function showResult(o) {
@@ -3427,10 +3473,10 @@ if (typeof module !== 'undefined') module.exports = Core;
     if (w < 0) { title = 'ひきわけ!'; why = o.reason === 'out' ? '2つとも 場外に 飛び出した。もう1回 しょうぶ!' : 'のこった 力が ほとんど 同じだった。もう1回 しょうぶ!'; }
     else {
       title = `${esc(dispName(win))}の かち!`;
-      why = o.reason === 'out' ? `${esc(dispName(lose))}が 場外に はじき出された! 軽い コマほど 飛ばされやすいよ。`
-        : o.reason === 'hp' ? `${esc(dispName(win))}の こうげきで、${esc(dispName(lose))}の たいりょくが 0に なった。`
+      why = o.reason === 'out' ? (o.finish ? `ダメージが たまった ${esc(dispName(lose))}を、とどめの 一発で 場外へ ふっとばした!`
+        : `スマッシュが 決まって、${esc(dispName(lose))}が 早くも 場外へ! 軽い コマほど 飛ばされやすいよ。`)
         : o.reason === 'spin' ? `${esc(dispName(lose))}の 回転が 止まった。線対称と 重心が 回転の 長もちを きめるよ。`
-          : o.reason === 'time' ? '時間切れ。のこった たいりょくと 回転が 多い ほうの かち。'
+          : o.reason === 'time' ? '時間切れ。ダメージが 少なく、回転が のこっている ほうの かち。'
             : 'ほぼ 同時に たおれた! のこった 力が 少しだけ 多い ほうの かち。';
       Snd.win();
     }
@@ -3477,6 +3523,16 @@ if (typeof module !== 'undefined') module.exports = Core;
       if (t.flash > 0) { c.globalCompositeOperation = 'lighter'; c.globalAlpha = 0.55; c.drawImage(p.sprite, -SPR / 2, -SPR / 2); c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1; }
       c.restore();
     });
+    for (const b of blasts) { // ふっとんだ 方向へ のびる 光の すじ
+      const bx = cx + b.x * Rp, by = cy + b.y * Rp, k = Math.min(1, b.life / 0.6), wd = W * 0.09 * k;
+      c.save(); c.translate(bx, by); c.rotate(b.a); c.globalAlpha = 0.85 * k;
+      const g2 = c.createLinearGradient(0, 0, W * 1.5, 0); g2.addColorStop(0, '#ffffff'); g2.addColorStop(0.15, b.c); g2.addColorStop(1, 'rgba(255,255,255,0)');
+      c.fillStyle = g2; c.beginPath(); c.moveTo(0, -wd * 0.25); c.lineTo(W * 1.5, -wd); c.lineTo(W * 1.5, wd); c.lineTo(0, wd * 0.25); c.closePath(); c.fill();
+      c.globalAlpha = k; c.strokeStyle = '#fff'; c.lineWidth = W / 200;
+      for (let j = 0; j < 10; j++) { const an = j * TAU / 10 + 0.3, r1 = W * (0.05 + 0.25 * (1 - k)), r2 = r1 + W * 0.09; c.beginPath(); c.moveTo(Math.cos(an) * r1, Math.sin(an) * r1); c.lineTo(Math.cos(an) * r2, Math.sin(an) * r2); c.stroke(); }
+      c.restore(); c.globalAlpha = 1;
+    }
+    if (flash > 0) { c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.fillStyle = `rgba(255,255,255,${Math.min(0.85, flash)})`; c.fillRect(0, 0, W, W); c.restore(); }
     c.lineCap = 'round';
     for (const s of sparks) { c.strokeStyle = s.c; c.globalAlpha = Math.min(1, s.life * 4); c.lineWidth = W / 260; c.beginPath(); c.moveTo(cx + s.x * Rp, cy + s.y * Rp); c.lineTo(cx + (s.x - s.vx * 0.04) * Rp, cy + (s.y - s.vy * 0.04) * Rp); c.stroke(); }
     c.globalAlpha = 1; c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
